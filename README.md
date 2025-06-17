@@ -26,6 +26,7 @@ docker-compose up -d
  - LLM model: RoLlama3.1-8b-Instruct
 
 ## RAG Script logic
+```bash
  1. Accept a question in Romanian
  2. Search Chroma for top 3 relevant legal chunks
  3. Format them as context
@@ -39,7 +40,7 @@ docker-compose up -d
     3. [article 3]
 
     ### Răspuns:
-
+```
 ---
 
 ## 🧩 Rezumatul etapelor proiectului
@@ -76,3 +77,40 @@ docker-compose up -d
 - Scop: testare, demo public, scalabilitate
 
 ---
+## Prompt example
+```bash
+A)  Întrebare
+Contextul întrebărilor se referă la Republica Moldova.
+Poate Președintele țării să-și depună demisia din propria inițiativă?
+Răspunsul să conțină referința la articolul din legislație.
+
+B) Cerințe față de răspuns:
+1) Să includă referințele la legislație.
+2) Verificare 
+  - Să existe referințele la articolele din legislație.
+  - Se afișează doar articolele relevante la întrebare.
+
+C) Totalizare
+ - La sfîrșit se adaogă o generalizare, luînd în considerare întrebarea adresată și informația găsită.
+```
+
+## Notes
+ - Chroma locks the embedding dimension at collection creation — and you can't mix or overwrite them.
+ - If is used multiple users/sessions
+```bash
+with gr.Blocks() as demo:
+    model_state = gr.State(embed_model)
+    llm_state = gr.State(llm)
+    
+    submit.click(fn=answer_question, inputs=[question, model_state, llm_state], ...)
+#   //But for now — global initialization at the top is enough for single-user local use.
+```
+ - Integrate FAISS with GPU acceleration
+```bash
+| Feature              | FAISS (GPU)       |
+| -------------------- | ----------------- |
+| Vector search speed  | ⚡ **Much faster** |
+| Million-scale search | ✅ Easily scalable |
+| GPU support          | ✅ CUDA-enabled    |
+| Offline-compatible   | ✅ 100% local      |
+```
