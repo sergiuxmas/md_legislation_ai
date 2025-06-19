@@ -1,93 +1,113 @@
+import chromadb
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from llama_cpp import Llama
-import chromadb
 import numpy as np
 import gradio as gr
+import time
+from typing import Tuple, List, Dict, Any
 
 # === CONFIGURATION ===
-CHROMA_HOST = "localhost"
-CHROMA_PORT = 8000
-COLLECTION_NAME = "Constitutia_2024_ro_chunks_e5"
-# EMBEDDING_MODEL = "intfloat/e5-large-v2"
-EMBEDDING_MODEL = "BAAI/bge-m3"
-LLAMA_MODEL_PATH = r"C:\llama\models\RoMistral-7b-Instruct.Q4_K_S.gguf"
 
-# Retrieval settings
+EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
+COLLECTION_NAME = "Constitutia_2024_ro_chunks_m3"
+
+# Available LLaMA models and paths
+LLAMA_MODELS = {
+    "RoMistral-7B": r"C:\llama\models\RoMistral-7b-Instruct.Q4_K_S.gguf",
+    "RoLLaMA3.1-8B": r"C:\llama\models\RoLlama3.1-8b-Instruct.Q4_K_M.gguf"
+}
+
 TOP_K_INITIAL = 20
 TOP_K_FINAL = 6
-
-# LLaMA generation settings
 MAX_TOKENS = 2048
 N_CTX = 4096
 N_THREADS = 6
-N_GPU_LAYERS = 40
+N_GPU_LAYERS = 30
 
-# === INITIALIZATION ===
-print("🧠 Loading embedding model...")
-embed_model = SentenceTransformer(EMBEDDING_MODEL)
+# === INIT MODELS ===
+
+print("🧠 Loading embedding model:", EMBEDDING_MODEL_NAME)
+embed_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
 print("🔗 Connecting to Chroma...")
-chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+chroma_client = chromadb.HttpClient(host="localhost", port=8000)
 collection = chroma_client.get_collection(name=COLLECTION_NAME)
 
-print("🦙 Loading LLaMA model (RoMistral)...")
-llm = Llama(
-    model_path=LLAMA_MODEL_PATH,
-    n_ctx=N_CTX,
-    n_threads=N_THREADS,
-    n_gpu_layers=N_GPU_LAYERS
-)
+# === Dynamic model loader ===
+loaded_models: Dict[str, Llama] = {}
 
-# === RAG + RERANK FUNCTION ===
-def answer_question(question):
+def load_llama(model_name: str) -> Llama:
+    if model_name not in loaded_models:
+        print(f"🦙 Loading LLaMA model: {model_name}")
+        model_path = LLAMA_MODELS[model_name]
+        loaded_models[model_name] = Llama(
+            model_path=model_path,
+            n_ctx=N_CTX,
+            n_threads=N_THREADS,
+            n_gpu_layers=N_GPU_LAYERS
+        )
+    return loaded_models[model_name]
+
+# === Unified RAG pipeline ===
+
+def full_pipeline(question: str, model_name: str) -> Tuple[str, str, str, str, str]:
     if not question.strip():
-        return "⚠️ Te rog introdu o întrebare."
+        return "", "⚠️ Întrebarea este goală.", "", "", ""
 
-    # Step 1: Embed the query
-    query_embedding = embed_model.encode([question])
+    t0_search = time.time()
+    query_emb = embed_model.encode([question])
+    results: Dict[str, Any] = collection.query(query_embeddings=query_emb.tolist(), n_results=TOP_K_INITIAL)
+    docs: List[str] = results.get("documents", [[]])[0]
 
-    # Step 2: Retrieve from Chroma
-    results = collection.query(
-        query_embeddings=query_embedding.tolist(),
-        n_results=TOP_K_INITIAL)
-    retrieved_docs = results["documents"][0]
-
-    if not retrieved_docs:
-        return "⚠️ Nu s-au găsit articole relevante."
-
-    # Step 3: Rerank
-    doc_embeddings = embed_model.encode(retrieved_docs)
-    sims = cosine_similarity(query_embedding, doc_embeddings)[0]
+    doc_embs = embed_model.encode(docs)
+    sims = cosine_similarity(query_emb, doc_embs)[0]
     top_indices = np.argsort(sims)[::-1][:TOP_K_FINAL]
-    top_chunks = [retrieved_docs[i] for i in top_indices]
+    top_chunks = [docs[i] for i in top_indices]
 
-    # Step 3: Format prompt
-    context = "\n".join([f"{i + 1}. {chunk.strip()}" for i, chunk in enumerate(top_chunks)])
+    context = "\n".join([f"{i+1}. {chunk.strip()}" for i, chunk in enumerate(top_chunks)])
     prompt = f"""### Întrebare:
-    {question}
+{question}
 
-    ### Context:
-    {context}
+### Context:
+{context}
 
-    ### Răspuns:
-    """
+### Răspuns:
+"""
+    search_time = f"{(time.time() - t0_search):.2f} secunde"
 
-    # Step 5: Generate
-    output = llm(prompt, max_tokens=MAX_TOKENS, stop=["###"])
+    # === Generate answer ===
+    t0_llm = time.time()
+    llm = load_llama(model_name)
+    output: Dict[str, Any] = llm(prompt, max_tokens=MAX_TOKENS, stop=["###"])
     answer = output["choices"][0]["text"].strip()
+    llm_time = f"{(time.time() - t0_llm):.2f} secunde"
 
-    return answer, context, prompt
+    return context, answer, prompt, search_time, llm_time
 
-# === GRADIO UI ===
+# === Gradio UI ===
+
 with gr.Blocks() as demo:
-    gr.Markdown("# 🧑‍⚖️ Asistent Juridic RAG – Constituția RM 🇲🇩")
-    qbox = gr.Textbox(label="Întrebare legală (română)")
-    submit = gr.Button("🔍 Caută și generează răspuns")
-    abox = gr.Textbox(label="🧠 Răspuns generat", lines=6)
-    cbox = gr.Textbox(label="📚 Context din Constituție (reranked)", lines=6)
-    pbox = gr.Textbox(label="📄 Prompt LLaMA", visible=False)
+    gr.Markdown("## 🧑‍⚖️ Asistent Juridic RAG – Constituția RM 🇲🇩")
 
-    submit.click(fn=answer_question, inputs=qbox, outputs=[abox, cbox, pbox])
+    qbox = gr.Textbox(label="Întrebare legală (română)")
+    model_selector = gr.Dropdown(
+        choices=list(LLAMA_MODELS.keys()),
+        value="RoMistral-7B",
+        label="Alege modelul LLaMA"
+    )
+    submit = gr.Button("🔍 Caută și răspunde")
+
+    answer_box = gr.Textbox(label="🧠 Răspuns LLaMA", lines=6)
+    prompt_box = gr.Textbox(label="📄 Prompt LLaMA", visible=False)
+    search_time_box = gr.Textbox(label="⏱️ Timp căutare", interactive=False)
+    context_box = gr.Textbox(label="📚 Context (retrieved)", lines=3)
+    llm_time_box = gr.Textbox(label="⏱️ Timp generare", interactive=False)
+
+    submit.click(
+        fn=full_pipeline,
+        inputs=[qbox, model_selector],
+        outputs=[context_box, answer_box, prompt_box, search_time_box, llm_time_box]
+    )
 
 demo.launch()
