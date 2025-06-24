@@ -1,0 +1,40 @@
+Goal:
+Use open-source projects, frameworks and tools to build a Romanian-language RAG system with LLM inference.
+Based on Vearba's architecture, Weaviate vector database, Ollama LLM interface and LangChain RAG orchestration.
+
+| Component         | Tool                      | Purpose                                    |
+| ----------------- | ------------------------- | ------------------------------------------ |
+| LLM Inference     | **Ollama**                | Run local LLaMA models easily              |
+| RAG Orchestration | **LangChain**             | Chain together search + generation + logic |
+| Vector DB         | **Weaviate**              | Semantic storage with hybrid retrieval     |
+| API Layer         | **FastAPI**               | Production-ready web backend               |
+| Voice Input       | **Whisper / whisper.cpp** | Speech-to-text input for Romanian          |
+| Memory            | LangChain or Redis        | Store user session history                 |
+| UI / Chat         | **Verba** or frontend     | Web/chat interface                         |
+
+Requirements:
+# Core framework
+fastapi
+uvicorn[standard]
+
+# RAG + LLM
+langchain
+weaviate-client
+ollama  # via langchain_community
+
+# Embeddings
+sentence-transformers
+scikit-learn
+
+# LLM & Whisper support
+openai-whisper
+pydub
+ffmpeg-python
+
+# Voice support (optional for whisper.cpp CLI)
+soundfile
+numpy
+
+# Utilities
+python-dotenv
+requests

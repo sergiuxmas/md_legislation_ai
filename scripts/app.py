@@ -9,12 +9,11 @@ from typing import Tuple, List, Dict, Any
 
 # === CONFIGURATION ===
 
-EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
-COLLECTION_NAME = "Constitutia_2024_ro_chunks_m3"
+EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-large"
+COLLECTION_NAME = "Constitutia_2024_ro_chunks_e5_multilingual"
 
-# Available LLaMA models and paths
 LLAMA_MODELS = {
-    "RoMistral-7B": r"C:\llama\models\RoMistral-7b-Instruct.Q4_K_S.gguf",
+    "RoMistral-7B": r"C:\llama\models\RoMistral-7B-Instruct.Q4_K_S.gguf",
     "RoLLaMA3.1-8B": r"C:\llama\models\RoLlama3.1-8b-Instruct.Q4_K_M.gguf"
 }
 
@@ -23,9 +22,9 @@ TOP_K_FINAL = 6
 MAX_TOKENS = 2048
 N_CTX = 4096
 N_THREADS = 6
-N_GPU_LAYERS = 30
+N_GPU_LAYERS = 40
 
-# === INIT MODELS ===
+# === INITIALIZATION ===
 
 print("🧠 Loading embedding model:", EMBEDDING_MODEL_NAME)
 embed_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
@@ -34,38 +33,41 @@ print("🔗 Connecting to Chroma...")
 chroma_client = chromadb.HttpClient(host="localhost", port=8000)
 collection = chroma_client.get_collection(name=COLLECTION_NAME)
 
-# === Dynamic model loader ===
-loaded_models: Dict[str, Llama] = {}
+# === Load models on demand and cache them ===
+loaded_llms: Dict[str, Llama] = {}
 
-def load_llama(model_name: str) -> Llama:
-    if model_name not in loaded_models:
-        print(f"🦙 Loading LLaMA model: {model_name}")
-        model_path = LLAMA_MODELS[model_name]
-        loaded_models[model_name] = Llama(
-            model_path=model_path,
+
+def get_llm(model_name: str) -> Llama:
+    if model_name not in loaded_llms:
+        print(f"🦙 Loading model: {model_name}")
+        loaded_llms[model_name] = Llama(
+            model_path=LLAMA_MODELS[model_name],
             n_ctx=N_CTX,
             n_threads=N_THREADS,
             n_gpu_layers=N_GPU_LAYERS
         )
-    return loaded_models[model_name]
+    return loaded_llms[model_name]
 
-# === Unified RAG pipeline ===
+
+# === COMBINED PIPELINE ===
 
 def full_pipeline(question: str, model_name: str) -> Tuple[str, str, str, str, str]:
     if not question.strip():
         return "", "⚠️ Întrebarea este goală.", "", "", ""
 
     t0_search = time.time()
-    query_emb = embed_model.encode([question])
-    results: Dict[str, Any] = collection.query(query_embeddings=query_emb.tolist(), n_results=TOP_K_INITIAL)
-    docs: List[str] = results.get("documents", [[]])[0]
 
-    doc_embs = embed_model.encode(docs)
+    formatted_query = f"query: {question}"
+    query_emb = embed_model.encode([formatted_query])
+    results = collection.query(query_embeddings=query_emb.tolist(), n_results=TOP_K_INITIAL)
+
+    docs = results.get("documents", [[]])[0]
+    doc_embs = embed_model.encode([f"passage: {doc}" for doc in docs])
     sims = cosine_similarity(query_emb, doc_embs)[0]
     top_indices = np.argsort(sims)[::-1][:TOP_K_FINAL]
     top_chunks = [docs[i] for i in top_indices]
 
-    context = "\n".join([f"{i+1}. {chunk.strip()}" for i, chunk in enumerate(top_chunks)])
+    context = "\n".join([f"{i + 1}. {chunk.strip()}" for i, chunk in enumerate(top_chunks)])
     prompt = f"""### Întrebare:
 {question}
 
@@ -74,18 +76,20 @@ def full_pipeline(question: str, model_name: str) -> Tuple[str, str, str, str, s
 
 ### Răspuns:
 """
+
     search_time = f"{(time.time() - t0_search):.2f} secunde"
 
-    # === Generate answer ===
+    # === LLaMA Inference ===
     t0_llm = time.time()
-    llm = load_llama(model_name)
-    output: Dict[str, Any] = llm(prompt, max_tokens=MAX_TOKENS, stop=["###"])
+    llm = get_llm(model_name)
+    output = llm(prompt, max_tokens=MAX_TOKENS, stop=["###"])
     answer = output["choices"][0]["text"].strip()
     llm_time = f"{(time.time() - t0_llm):.2f} secunde"
 
     return context, answer, prompt, search_time, llm_time
 
-# === Gradio UI ===
+
+# === GRADIO UI ===
 
 with gr.Blocks() as demo:
     gr.Markdown("## 🧑‍⚖️ Asistent Juridic RAG – Constituția RM 🇲🇩")
@@ -97,12 +101,11 @@ with gr.Blocks() as demo:
         label="Alege modelul LLaMA"
     )
     submit = gr.Button("🔍 Caută și răspunde")
-
-    answer_box = gr.Textbox(label="🧠 Răspuns LLaMA", lines=6)
-    prompt_box = gr.Textbox(label="📄 Prompt LLaMA", visible=False)
-    search_time_box = gr.Textbox(label="⏱️ Timp căutare", interactive=False)
-    context_box = gr.Textbox(label="📚 Context (retrieved)", lines=3)
+    answer_box = gr.Textbox(label="🧠 Răspuns generat", lines=3)
     llm_time_box = gr.Textbox(label="⏱️ Timp generare", interactive=False)
+    prompt_box = gr.Textbox(label="📄 Prompt LLaMA", visible=False)
+    context_box = gr.Textbox(label="📚 Context extras", lines=6)
+    search_time_box = gr.Textbox(label="⏱️ Timp căutare", interactive=False)
 
     submit.click(
         fn=full_pipeline,
